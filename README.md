@@ -1,5 +1,4 @@
 
-Crime Data Analysis Dashboard
 Hello guys 
 if u want to see the implementation of working of crime data
 u have to download the run.py and app.py and .csv files all there in the files
