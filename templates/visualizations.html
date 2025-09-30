@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Visualizations - Crime Analytics Pro{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="glass-card p-4 mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap">
+            <div>
+                <h2><i class="fas fa-chart-bar me-2"></i>Advanced Visualizations</h2>
+                <p class="text-muted mb-0">12+ Interactive Chart Types with Real-time Streaming</p>
+            </div>
+            <div class="mt-2">
+                <a href="{{ url_for('stream_visuals') }}" class="btn btn-realistic me-2" id="streamBtn">
+                    <i class="fas fa-sync me-2"></i>
+                    <span id="streamText">{% if auto_refresh %}Stop Streaming{% else %}Start Streaming{% endif %}</span>
+                </a>
+                <a href="{{ url_for('download_data') }}" class="btn btn-success">
+                    <i class="fas fa-download me-2"></i>Export Data
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="glass-card p-4 mb-4">
+        <h4>Select Chart Type</h4>
+        <div class="row g-2 mb-4">
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='bar') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'bar' %}active{% endif %}">
+                    <i class="fas fa-chart-bar me-2"></i>Bar Chart
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='pie') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'pie' %}active{% endif %}">
+                    <i class="fas fa-chart-pie me-2"></i>Pie Chart
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='line') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'line' %}active{% endif %}">
+                    <i class="fas fa-chart-line me-2"></i>Line Chart
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='heatmap') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'heatmap' %}active{% endif %}">
+                    <i class="fas fa-map me-2"></i>Heatmap
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='scatter') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'scatter' %}active{% endif %}">
+                    <i class="fas fa-dot-circle me-2"></i>Scatter Plot
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='area') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'area' %}active{% endif %}">
+                    <i class="fas fa-chart-area me-2"></i>Area Chart
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='box') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'box' %}active{% endif %}">
+                    <i class="fas fa-chart-box me-2"></i>Box Plot
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='violin') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'violin' %}active{% endif %}">
+                    <i class="fas fa-guitar me-2"></i>Violin Plot
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='histogram') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'histogram' %}active{% endif %}">
+                    <i class="fas fa-chart-histogram me-2"></i>Histogram
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='3d_scatter') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == '3d_scatter' %}active{% endif %}">
+                    <i class="fas fa-cube me-2"></i>3D Scatter
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='sunburst') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'sunburst' %}active{% endif %}">
+                    <i class="fas fa-sun me-2"></i>Sunburst
+                </a>
+            </div>
+            <div class="col-md-3 col-6">
+                <a href="{{ url_for('visualizations', type='treemap') }}" class="btn btn-outline-primary w-100 chart-btn {% if current_chart == 'treemap' %}active{% endif %}">
+                    <i class="fas fa-tree me-2"></i>Treemap
+                </a>
+            </div>
+        </div>
+
+        <div class="chart-container" id="chartContainer">
+            {{ chart_html|safe }}
+        </div>
+        
+        {% if auto_refresh %}
+        <div class="mt-3 text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="text-muted mt-2">Live streaming visuals - updating every 5 seconds</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let streamInterval;
+const streamBtn = document.getElementById('streamBtn');
+const streamText = document.getElementById('streamText');
+const chartContainer = document.getElementById('chartContainer');
+
+{% if auto_refresh %}
+// Start auto-refresh if streaming is enabled
+startStreaming();
+{% endif %}
+
+streamBtn.addEventListener('click', function(e) {
+    e.preventDefault();
+    const isStreaming = streamText.textContent === 'Stop Streaming';
+    
+    if (isStreaming) {
+        stopStreaming();
+    } else {
+        startStreaming();
+    }
+});
+
+function startStreaming() {
+    streamText.textContent = 'Stop Streaming';
+    streamBtn.classList.add('btn-danger');
+    streamBtn.classList.remove('btn-realistic');
+    
+    streamInterval = setInterval(updateChart, 5000);
+    updateChart(); // Initial update
+}
+
+function stopStreaming() {
+    streamText.textContent = 'Start Streaming';
+    streamBtn.classList.remove('btn-danger');
+    streamBtn.classList.add('btn-realistic');
+    
+    if (streamInterval) {
+        clearInterval(streamInterval);
+    }
+}
+
+function updateChart() {
+    fetch('/stream-visuals?type={{ current_chart }}')
+        .then(response => response.json())
+        .then(data => {
+            chartContainer.innerHTML = data.chart_html;
+            // Re-initialize Plotly if needed
+            if (typeof Plotly !== 'undefined') {
+                Plotly.purge(chartContainer);
+                Plotly.react(chartContainer, JSON.parse(data.chart_html));
+            }
+        })
+        .catch(error => console.error('Error updating chart:', error));
+}
+
+// Add animation to chart container
+chartContainer.style.transition = 'all 0.5s ease';
+setInterval(() => {
+    chartContainer.style.transform = chartContainer.style.transform === 'scale(1.02)' ? 'scale(1)' : 'scale(1.02)';
+}, 2000);
+</script>
+{% endblock %}

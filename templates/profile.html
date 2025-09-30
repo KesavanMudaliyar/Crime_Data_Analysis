@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}User Profile - Crime Analytics Pro{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="glass-card p-4 mb-4">
+        <h2><i class="fas fa-user me-2"></i>User Profile & Activity</h2>
+        <p class="text-muted">Your account information and recent activities</p>
+    </div>
+
+    <div class="row">
+        <div class="col-md-4">
+            <div class="glass-card p-4 mb-4">
+                <div class="text-center">
+                    <div class="rounded-circle bg-primary d-inline-flex align-items-center justify-content-center mb-3" style="width: 100px; height: 100px;">
+                        <i class="fas fa-user fa-3x text-white"></i>
+                    </div>
+                    <h4>{{ user.username }}</h4>
+                    <p class="text-muted">{{ user.email }}</p>
+                    <span class="badge bg-{% if user.role == 'admin' %}danger{% else %}primary{% endif %} mb-3">
+                        {{ user.role|upper }}
+                    </span>
+                </div>
+                
+                <div class="mt-4">
+                    <h5>Account Details</h5>
+                    <div class="mb-2">
+                        <strong>Member Since:</strong> {{ user.created_at.strftime('%B %d, %Y') }}
+                    </div>
+                    <div class="mb-2">
+                        <strong>Last Login:</strong> {{ user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never' }}
+                    </div>
+                    <div class="mb-2">
+                        <strong>Status:</strong> 
+                        <span class="badge bg-{% if user.is_active %}success{% else %}secondary{% endif %}">
+                            {% if user.is_active %}Active{% else %}Inactive{% endif %}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-8">
+            <div class="glass-card p-4">
+                <h4><i class="fas fa-history me-2"></i>Recent Activities</h4>
+                <p class="text-muted">Your last 10 actions in the system</p>
+                
+                {% if user_logs %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th>Target</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for log in user_logs %}
+                            <tr>
+                                <td>{{ log.timestamp.strftime('%m/%d %H:%M') }}</td>
+                                <td>
+                                    <span class="badge bg-{% if log.action == 'UPDATE_RECORD' %}warning{% elif log.action == 'DELETE_RECORD' %}danger{% elif log.action == 'ADD_RECORD' %}success{% elif log.action == 'DATA_UPLOAD' %}info{% else %}primary{% endif %}">
+                                        {{ log.action }}
+                                    </span>
+                                </td>
+                                <td>{{ log.table_name or 'System' }}</td>
+                                <td>{{ log.description or 'No description' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="fas fa-clipboard-list fa-3x text-muted mb-3"></i>
+                    <p class="text-muted">No recent activities found.</p>
+                </div>
+                {% endif %}
+                
+                <div class="mt-4">
+                    <a href="{{ url_for('audit_logs') }}" class="btn btn-realistic w-100">
+                        <i class="fas fa-list-alt me-2"></i>View Complete History
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

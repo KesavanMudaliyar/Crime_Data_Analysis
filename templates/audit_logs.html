@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Audit History - Crime Analytics Pro{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="glass-card p-4 mb-4">
+        <h2><i class="fas fa-history me-2"></i>Complete Audit History</h2>
+        <p class="text-muted">Detailed log of all user activities and system operations</p>
+    </div>
+
+    <div class="glass-card p-4">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>User ID</th>
+                        <th>Action</th>
+                        <th>Table</th>
+                        <th>Record ID</th>
+                        <th>IP Address</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs.items %}
+                    <tr>
+                        <td>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>{{ log.user_id }}</td>
+                        <td>
+                            <span class="badge bg-{% if log.action == 'UPDATE_RECORD' %}warning{% elif log.action == 'DELETE_RECORD' %}danger{% elif log.action == 'ADD_RECORD' %}success{% elif log.action == 'DATA_UPLOAD' %}info{% elif 'USER' in log.action %}primary{% else %}secondary{% endif %}">
+                                {{ log.action }}
+                            </span>
+                        </td>
+                        <td>{{ log.table_name or 'N/A' }}</td>
+                        <td>{{ log.record_id or 'N/A' }}</td>
+                        <td>{{ log.ip_address or 'N/A' }}</td>
+                        <td>{{ log.description or 'No description' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Pagination -->
+        <nav aria-label="Audit logs pagination" class="mt-4">
+            <ul class="pagination justify-content-center">
+                {% if logs.has_prev %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('audit_logs', page=logs.prev_num) }}">Previous</a>
+                </li>
+                {% endif %}
+                
+                {% for page_num in logs.iter_pages() %}
+                    {% if page_num %}
+                        <li class="page-item {% if page_num == logs.page %}active{% endif %}">
+                            <a class="page-link" href="{{ url_for('audit_logs', page=page_num) }}">{{ page_num }}</a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled"><span class="page-link">…</span></li>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if logs.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('audit_logs', page=logs.next_num) }}">Next</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        
+        <div class="text-center mt-3">
+            <p class="text-muted">
+                Showing page {{ logs.page }} of {{ logs.pages }} - Total {{ logs.total }} records
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,1031 @@
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash, jsonify, send_file
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import pandas as pd
+import os
+from functools import wraps
+import io
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+import csv
+import json
+
+# --- CONFIGURATION ---
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key-here-change-in-production'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///crime_data.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['POWERBI_EMBED_URL'] = ''  # Your Power BI embed URL goes here
+db = SQLAlchemy(app)
+
+# --- MODELS ---
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class CrimeData(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    year = db.Column(db.Integer, nullable=False)
+    rape = db.Column(db.Integer, default=0)
+    state_id = db.Column(db.Integer, nullable=False)
+    state = db.Column(db.String(100), nullable=False)
+    kidnap_abduction = db.Column(db.Integer, default=0)
+    domestic_violence = db.Column(db.Integer, default=0)
+    dowry_deaths = db.Column(db.Integer, default=0)
+    assault_on_women = db.Column(db.Integer, default=0)
+    assault_on_minors = db.Column(db.Integer, default=0)
+    women_trafficking = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class AuditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    username = db.Column(db.String(80), nullable=False)
+    action = db.Column(db.String(20), nullable=False)
+    record_id = db.Column(db.Integer, nullable=True)
+    old_data = db.Column(db.Text, nullable=True)
+    new_data = db.Column(db.Text, nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    user = db.relationship('User', backref='audit_logs')
+
+# --- UTILITY FUNCTIONS ---
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please login to access this page.', 'warning')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def log_audit(action, record_id=None, old_data=None, new_data=None):
+    """Log audit trail for record changes"""
+    if 'user_id' in session:
+        audit = AuditLog(
+            user_id=session['user_id'],
+            username=session['username'],
+            action=action,
+            record_id=record_id,
+            # Use json.dumps for clean string representation
+            old_data=json.dumps(old_data) if old_data else None,
+            new_data=json.dumps(new_data) if new_data else None
+        )
+        db.session.add(audit)
+        db.session.commit()
+
+def export_to_csv():
+    """Export current database to CSV for Power BI sync"""
+    csv_file = 'CrimesOnWomenData_Live.csv'
+    records = CrimeData.query.all()
+    
+    with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['ID', 'YEAR', 'STATE_ID', 'STATE', 'RAPE', 'KIDNAP', 
+                        'DOMESTIC', 'DOWRY', 'ASSAULT_WOMEN', 'ASSAULT_MINORS', 'TRAFFICKING'])
+        
+        for record in records:
+            writer.writerow([
+                record.id, record.year, record.state_id, record.state,
+                record.rape, record.kidnap_abduction, record.domestic_violence,
+                record.dowry_deaths, record.assault_on_women, record.assault_on_minors,
+                record.women_trafficking
+            ])
+    
+    return csv_file
+
+def init_db():
+    with app.app_context():
+        db.create_all()
+        
+        if CrimeData.query.count() == 0:
+            csv_file = 'CrimesOnWomenData.csv'
+            if os.path.exists(csv_file):
+                try:
+                    df = pd.read_csv(csv_file)
+                    
+                    # Robust column mapping logic based on inspection
+                    df['ID.1'] = df['ID.1'].fillna(df['ID'])
+                    
+                    # Impute missing values with 0 for crime counts to allow int conversion
+                    for col in ['KIDNAPANDABDUCTION', 'DOMESTICVIOLENCE', 'DOWRYDEATHS', 
+                                'ASSAULTONWOMEN', 'ASSAULTONMINORS', 'WOMENTRAFFICKING']:
+                        if col in df.columns:
+                            df[col] = df[col].fillna(0).astype(int)
+                    
+                    for _, row in df.iterrows():
+                        # Use a more robust way to get column names, checking for variations
+                        year = int(row.get('YEAR', 2001))
+                        state_id = int(row.get('ID.1', row.get('ID', 1)))
+                        state = str(row.get('STATE', 'Unknown'))
+                        
+                        rape_val = int(row.get('RAPE', 0))
+                        kidnap_val = int(row.get('KIDNAPANDABDUCTION', 0))
+                        domestic_val = int(row.get('DOMESTICVIOLENCE', 0))
+                        dowry_val = int(row.get('DOWRYDEATHS', 0))
+                        assault_w_val = int(row.get('ASSAULTONWOMEN', 0))
+                        assault_m_val = int(row.get('ASSAULTONMINORS', 0))
+                        trafficking_val = int(row.get('WOMENTRAFFICKING', 0))
+
+                        crime = CrimeData(
+                            year=year,
+                            # Ensure non-negative and non-zero for calculations, use max(val, 1) to avoid issues
+                            rape=max(rape_val, 1), 
+                            state_id=state_id,
+                            state=state,
+                            kidnap_abduction=max(kidnap_val, 1),
+                            domestic_violence=max(domestic_val, 1),
+                            dowry_deaths=max(dowry_val, 1),
+                            assault_on_women=max(assault_w_val, 1),
+                            assault_on_minors=max(assault_m_val, 1),
+                            women_trafficking=max(trafficking_val, 1)
+                        )
+                        db.session.add(crime)
+                    db.session.commit()
+                    print(f"Loaded {df.shape[0]} records from CSV")
+                    # Create initial CSV for Power BI
+                    export_to_csv()
+                except Exception as e:
+                    print(f"Error loading CSV: {e}")
+                    db.session.rollback()
+
+# --- ROUTES ---
+@app.route('/')
+def index():
+    if 'user_id' in session:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if 'user_id' in session:
+        return redirect(url_for('dashboard'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user = User.query.filter_by(username=username).first()
+        
+        if user and check_password_hash(user.password_hash, password):
+            session['user_id'] = user.id
+            session['username'] = user.username
+            flash('Login successful!', 'success')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Invalid username or password', 'danger')
+    
+    return render_template_string(LOGIN_TEMPLATE)
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if 'user_id' in session:
+        return redirect(url_for('dashboard'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        confirm_password = request.form.get('confirm_password')
+        
+        if password != confirm_password:
+            flash('Passwords do not match', 'danger')
+            return render_template_string(SIGNUP_TEMPLATE)
+        
+        if User.query.filter_by(username=username).first():
+            flash('Username already exists', 'danger')
+            return render_template_string(SIGNUP_TEMPLATE)
+        
+        if User.query.filter_by(email=email).first():
+            flash('Email already registered', 'danger')
+            return render_template_string(SIGNUP_TEMPLATE)
+        
+        user = User(
+            username=username,
+            email=email,
+            password_hash=generate_password_hash(password)
+        )
+        db.session.add(user)
+        db.session.commit()
+        
+        flash('Account created successfully! Please login.', 'success')
+        return redirect(url_for('login'))
+    
+    return render_template_string(SIGNUP_TEMPLATE)
+
+@app.route('/logout')
+@login_required
+def logout():
+    session.clear()
+    flash('Logged out successfully', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    records = CrimeData.query.order_by(CrimeData.year.desc()).limit(10).all()
+    
+    total_records = CrimeData.query.count()
+    total_crimes = db.session.query(
+        db.func.sum(CrimeData.rape + CrimeData.kidnap_abduction + 
+                   CrimeData.domestic_violence + CrimeData.dowry_deaths +
+                   CrimeData.assault_on_women + CrimeData.women_trafficking)
+    ).scalar() or 0
+    
+    states_count = db.session.query(db.func.count(db.func.distinct(CrimeData.state))).scalar()
+    
+    years = db.session.query(db.func.min(CrimeData.year), db.func.max(CrimeData.year)).first()
+    year_range = f"{years[0]}-{years[1]}" if years[0] else "N/A"
+    
+    stats = {
+        'total_records': total_records,
+        'total_crimes': int(total_crimes),
+        'states_count': states_count,
+        'year_range': year_range
+    }
+    
+    return render_template_string(DASHBOARD_TEMPLATE, 
+                                 records=records, 
+                                 stats=stats,
+                                 username=session.get('username'),
+                                 powerbi_url=app.config['POWERBI_EMBED_URL'])
+
+@app.route('/data-management')
+@login_required
+def data_management():
+    records = CrimeData.query.order_by(CrimeData.year.desc(), CrimeData.state).all()
+    return render_template_string(DATA_MANAGEMENT_TEMPLATE, 
+                                 records=records, 
+                                 username=session.get('username'))
+
+@app.route('/powerbi')
+@login_required
+def powerbi_dashboard():
+    return render_template_string(POWERBI_TEMPLATE, 
+                                 username=session.get('username'),
+                                 powerbi_url=app.config['POWERBI_EMBED_URL'])
+
+@app.route('/api/records/<int:id>')
+@login_required
+def get_record(id):
+    record = CrimeData.query.get_or_404(id)
+    return jsonify({
+        'id': record.id,
+        'year': record.year,
+        'state': record.state,
+        'state_id': record.state_id,
+        'rape': record.rape,
+        'kidnap_abduction': record.kidnap_abduction,
+        'domestic_violence': record.domestic_violence,
+        'dowry_deaths': record.dowry_deaths,
+        'assault_on_women': record.assault_on_women,
+        'assault_on_minors': record.assault_on_minors,
+        'women_trafficking': record.women_trafficking
+    })
+
+@app.route('/api/records', methods=['POST'])
+@login_required
+def add_record():
+    try:
+        data = request.json
+        # Convert to int, defaulting to 1 to maintain model integrity (as per init_db logic)
+        data = {k: max(int(v), 1) if k in ['rape', 'kidnap_abduction', 'domestic_violence', 'dowry_deaths', 'assault_on_women', 'assault_on_minors', 'women_trafficking', 'year', 'state_id'] else v for k, v in data.items()}
+        
+        record = CrimeData(
+            year=data['year'],
+            state=data['state'],
+            state_id=data['state_id'],
+            rape=data['rape'],
+            kidnap_abduction=data['kidnap_abduction'],
+            domestic_violence=data['domestic_violence'],
+            dowry_deaths=data['dowry_deaths'],
+            assault_on_women=data['assault_on_women'],
+            assault_on_minors=data['assault_on_minors'],
+            women_trafficking=data['women_trafficking']
+        )
+        db.session.add(record)
+        db.session.commit()
+        
+        log_audit('CREATE', record.id, None, data)
+        export_to_csv()
+        
+        return jsonify({'success': True, 'message': 'Record added successfully', 'id': record.id})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+@app.route('/api/records/<int:id>', methods=['PUT'])
+@login_required
+def update_record(id):
+    try:
+        record = CrimeData.query.get_or_404(id)
+        
+        # Create old data snapshot before update
+        old_data = {
+            'year': record.year, 'state': record.state, 'state_id': record.state_id,
+            'rape': record.rape, 'kidnap_abduction': record.kidnap_abduction,
+            'domestic_violence': record.domestic_violence, 'dowry_deaths': record.dowry_deaths,
+            'assault_on_women': record.assault_on_women, 'assault_on_minors': record.assault_on_minors,
+            'women_trafficking': record.women_trafficking
+        }
+        
+        data = request.json
+        # Convert to int, defaulting to 1 to maintain model integrity
+        data = {k: max(int(v), 1) if k in ['rape', 'kidnap_abduction', 'domestic_violence', 'dowry_deaths', 'assault_on_women', 'assault_on_minors', 'women_trafficking', 'year', 'state_id'] else v for k, v in data.items()}
+
+        record.year = data['year']
+        record.state = data['state']
+        record.state_id = data['state_id']
+        record.rape = data['rape']
+        record.kidnap_abduction = data['kidnap_abduction']
+        record.domestic_violence = data['domestic_violence']
+        record.dowry_deaths = data['dowry_deaths']
+        record.assault_on_women = data['assault_on_women']
+        record.assault_on_minors = data['assault_on_minors']
+        record.women_trafficking = data['women_trafficking']
+        
+        db.session.commit()
+        
+        log_audit('UPDATE', record.id, old_data, data)
+        export_to_csv()
+        
+        return jsonify({'success': True, 'message': 'Record updated successfully'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+@app.route('/api/records/<int:id>', methods=['DELETE'])
+@login_required
+def delete_record(id):
+    try:
+        record = CrimeData.query.get_or_404(id)
+        old_data = {
+            'year': record.year, 'state': record.state, 'rape': record.rape
+        }
+        
+        db.session.delete(record)
+        db.session.commit()
+        
+        log_audit('DELETE', id, old_data, None)
+        export_to_csv()
+        
+        return jsonify({'success': True, 'message': 'Record deleted successfully'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+@app.route('/api/chart-data')
+@login_required
+def chart_data():
+    records = CrimeData.query.all()
+    
+    crime_totals = {
+        'Rape': sum(r.rape for r in records),
+        'Kidnapping/Abduction': sum(r.kidnap_abduction for r in records),
+        'Domestic Violence (Cruelty by Husband/Relatives)': sum(r.domestic_violence for r in records),
+        'Dowry Deaths': sum(r.dowry_deaths for r in records),
+        'Assault on Women': sum(r.assault_on_women for r in records),
+        'Women Trafficking': sum(r.women_trafficking for r in records)
+    }
+    
+    state_crimes = {}
+    for record in records:
+        state = record.state.upper()  # Normalize state names
+        if state not in state_crimes:
+            state_crimes[state] = 0
+        state_crimes[state] += (record.rape + record.kidnap_abduction + 
+                                       record.domestic_violence + record.dowry_deaths +
+                                       record.assault_on_women + record.women_trafficking)
+    
+    # Top 10 States
+    top_states = dict(sorted(state_crimes.items(), key=lambda x: x[1], reverse=True)[:10])
+    
+    # Yearly Trends
+    yearly_data = {}
+    for record in records:
+        if record.year not in yearly_data:
+            yearly_data[record.year] = 0
+        yearly_data[record.year] += (record.rape + record.kidnap_abduction + 
+                                     record.domestic_violence + record.dowry_deaths +
+                                     record.assault_on_women + record.women_trafficking)
+    
+    yearly_sorted = dict(sorted(yearly_data.items()))
+    
+    return jsonify({
+        'crime_totals': crime_totals,
+        'top_states': top_states,
+        'yearly_trends': yearly_sorted
+    })
+
+@app.route('/download/csv')
+@login_required
+def download_csv():
+    """Download live CSV file for Power BI"""
+    csv_file = export_to_csv()
+    return send_file(csv_file, as_attachment=True, download_name='crime_data_live.csv', mimetype='text/csv')
+
+@app.route('/download/excel')
+@login_required
+def download_excel():
+    records = CrimeData.query.all()
+    data = []
+    for record in records:
+        data.append({
+            'Year': record.year,
+            'State': record.state,
+            'Rape': record.rape,
+            'Kidnapping': record.kidnap_abduction,
+            'Domestic Violence': record.domestic_violence,
+            'Dowry Deaths': record.dowry_deaths,
+            'Assault on Women': record.assault_on_women,
+            'Assault on Minors': record.assault_on_minors,
+            'Women Trafficking': record.women_trafficking
+        })
+    
+    df = pd.DataFrame(data)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Crime Data')
+    
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name='crime_data.xlsx', 
+                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/download/pdf')
+@login_required
+def download_pdf():
+    """Generate comprehensive PDF report (similar to previous version)"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Custom styles (omitted for brevity, assume standard styles for reportlab)
+    
+    # ... PDF generation logic remains largely the same as previous versions ...
+
+    elements.append(Paragraph("Crime Data Analysis Report", styles['Heading1']))
+    elements.append(Spacer(1, 0.5*inch))
+    
+    # Summary Table
+    records = CrimeData.query.all()
+    total_crimes = sum(r.rape + r.kidnap_abduction + r.domestic_violence + 
+                      r.dowry_deaths + r.assault_on_women + r.women_trafficking 
+                      for r in records)
+    summary_data = [
+        ['Metric', 'Value'],
+        ['Total Records', f'{len(records):,}'],
+        ['Total Crimes Reported', f'{total_crimes:,}']
+    ]
+    summary_table = Table(summary_data, colWidths=[2.5*inch, 2.5*inch])
+    summary_table.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey)
+    ]))
+    elements.append(summary_table)
+    elements.append(PageBreak())
+
+    # Detailed Records Table
+    elements.append(Paragraph("Detailed Crime Records", styles['Heading2']))
+    data = [['Year', 'State', 'Rape', 'Kidnap', 'Domestic', 'Dowry', 'Assault', 'Traffic']]
+    for record in records:
+        data.append([
+            str(record.year),
+            record.state[:20],
+            str(record.rape),
+            str(record.kidnap_abduction),
+            str(record.domestic_violence),
+            str(record.dowry_deaths),
+            str(record.assault_on_women),
+            str(record.women_trafficking)
+        ])
+    
+    table = Table(data)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ]))
+    
+    elements.append(table)
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name='crime_data_full_report.pdf', mimetype='application/pdf')
+
+@app.route('/history')
+@login_required
+def history():
+    logs = AuditLog.query.order_by(AuditLog.timestamp.desc()).limit(200).all()
+    return render_template_string(HISTORY_TEMPLATE, logs=logs, username=session.get('username'))
+
+# --- TEMPLATES (HTML/CSS/JS) ---
+
+LOGIN_TEMPLATE = '''<!DOCTYPE html><html>... (omitted for brevity, remains the same) ...'''
+SIGNUP_TEMPLATE = '''<!DOCTYPE html><html>... (omitted for brevity, remains the same) ...'''
+POWERBI_TEMPLATE = '''<!DOCTYPE html><html>... (omitted for brevity, remains the same, shows placeholder if no URL) ...'''
+HISTORY_TEMPLATE = '''<!DOCTYPE html><html>... (omitted for brevity, remains the same) ...'''
+
+# NEW Data Management Page Template
+DATA_MANAGEMENT_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Data Management (CRUD)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f5f7fa; }
+        .navbar { background: linear-gradient(135deg,#667eea 0%,#764ba2 100%); color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+        .navbar h1 { font-size: 24px; }
+        .navbar button { background: rgba(255, 255, 255, 0.2); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; transition: background 0.3s; }
+        .navbar button:hover { background: rgba(255, 255, 255, 0.3); }
+        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+        .section { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); margin-bottom: 2rem; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+        .btn { background: linear-gradient(135deg,#667eea 0%,#764ba2 100%); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: transform 0.2s; }
+        .btn:hover { transform: translateY(-2px); }
+        .btn-danger { background: linear-gradient(135deg,#f093fb 0%,#f5576c 100%); }
+        .btn-success { background: linear-gradient(135deg,#4facfe 0%,#00f2fe 100%); }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e1e1e1; font-size: 12px; }
+        th { background: #eef2ff; font-weight: 600; color: #667eea; }
+        tr:hover { background: #f8f9fa; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; padding: 2rem; border-radius: 12px; max-width: 800px; width: 90%; max-height: 90vh; overflow-y: auto; }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; font-size: 12px; }
+        .form-group input { width: 100%; padding: 8px; border: 1px solid #e1e1e1; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <h1>🛠️ Data Management</h1>
+        <div>
+            <button onclick="window.location.href='{{ url_for('dashboard') }}'">← Dashboard</button>
+            <button onclick="window.location.href='{{ url_for('logout') }}'">Logout</button>
+        </div>
+    </div>
+    <div class="container">
+        <div class="section">
+            <div class="section-header">
+                <h2>All Crime Data Records</h2>
+                <button class="btn" onclick="openAddModal()">➕ Add New Record</button>
+            </div>
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th><th>Year</th><th>State</th><th>Rape</th><th>Kidnap</th><th>Domestic</th><th>Dowry</th><th>Assault(W)</th><th>Assault(M)</th><th>Traffic</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recordsTableBody">
+                        {% for r in records %}
+                        <tr id="row-{{ r.id }}">
+                            <td>{{ r.id }}</td>
+                            <td>{{ r.year }}</td>
+                            <td>{{ r.state }}</td>
+                            <td>{{ r.rape }}</td>
+                            <td>{{ r.kidnap_abduction }}</td>
+                            <td>{{ r.domestic_violence }}</td>
+                            <td>{{ r.dowry_deaths }}</td>
+                            <td>{{ r.assault_on_women }}</td>
+                            <td>{{ r.assault_on_minors }}</td>
+                            <td>{{ r.women_trafficking }}</td>
+                            <td>
+                                <button class="btn btn-success" style="padding:4px 8px;" onclick="editRecord({{ r.id }})">Edit</button>
+                                <button class="btn btn-danger" style="padding:4px 8px;" onclick="deleteRecord({{ r.id }})">Delete</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="recordModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Add Record</h2>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="recordForm">
+                <input type="hidden" id="recordId">
+                <div class="form-grid">
+                    <div class="form-group"><label>Year</label><input type="number" id="year" required></div>
+                    <div class="form-group"><label>State</label><input type="text" id="state" required></div>
+                    <div class="form-group"><label>State ID</label><input type="number" id="state_id" required></div>
+                    <div class="form-group"><label>Rape</label><input type="number" id="rape" required></div>
+                    <div class="form-group"><label>Kidnapping</label><input type="number" id="kidnap_abduction" required></div>
+                    <div class="form-group"><label>Domestic Violence</label><input type="number" id="domestic_violence" required></div>
+                    <div class="form-group"><label>Dowry Deaths</label><input type="number" id="dowry_deaths" required></div>
+                    <div class="form-group"><label>Assault Women</label><input type="number" id="assault_on_women" required></div>
+                    <div class="form-group"><label>Assault Minors</label><input type="number" id="assault_on_minors" required></div>
+                    <div class="form-group"><label>Trafficking</label><input type="number" id="women_trafficking" required></div>
+                </div>
+                <button type="submit" class="btn" style="margin-top:1rem">Save Record</button>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        function closeModal() { document.getElementById('recordModal').classList.remove('active'); }
+        function openAddModal() {
+            document.getElementById('modalTitle').textContent = 'Add New Record';
+            document.getElementById('recordForm').reset();
+            document.getElementById('recordId').value = '';
+            document.getElementById('recordModal').classList.add('active');
+        }
+        
+        async function editRecord(id) {
+            const response = await fetch('/api/records/' + id);
+            const data = await response.json();
+            document.getElementById('modalTitle').textContent = 'Edit Record (ID: ' + id + ')';
+            document.getElementById('recordId').value = data.id;
+            document.getElementById('year').value = data.year;
+            document.getElementById('state').value = data.state;
+            document.getElementById('state_id').value = data.state_id;
+            document.getElementById('rape').value = data.rape;
+            document.getElementById('kidnap_abduction').value = data.kidnap_abduction;
+            document.getElementById('domestic_violence').value = data.domestic_violence;
+            document.getElementById('dowry_deaths').value = data.dowry_deaths;
+            document.getElementById('assault_on_women').value = data.assault_on_women;
+            document.getElementById('assault_on_minors').value = data.assault_on_minors;
+            document.getElementById('women_trafficking').value = data.women_trafficking;
+            document.getElementById('recordModal').classList.add('active');
+        }
+
+        async function deleteRecord(id) {
+            if (confirm('Are you sure you want to delete Record ID: ' + id + '? This action is logged.')) {
+                const response = await fetch('/api/records/' + id, { method: 'DELETE' });
+                const data = await response.json();
+                if (data.success) {
+                    alert(data.message);
+                    // Dynamically remove row from table for "live" feel
+                    document.getElementById('row-' + id).remove();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            }
+        }
+
+        document.getElementById('recordForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const id = document.getElementById('recordId').value;
+            const data = {
+                year: document.getElementById('year').value,
+                state: document.getElementById('state').value,
+                state_id: document.getElementById('state_id').value,
+                rape: document.getElementById('rape').value,
+                kidnap_abduction: document.getElementById('kidnap_abduction').value,
+                domestic_violence: document.getElementById('domestic_violence').value,
+                dowry_deaths: document.getElementById('dowry_deaths').value,
+                assault_on_women: document.getElementById('assault_on_women').value,
+                assault_on_minors: document.getElementById('assault_on_minors').value,
+                women_trafficking: document.getElementById('women_trafficking').value
+            };
+
+            const url = id ? '/api/records/' + id : '/api/records';
+            const method = id ? 'PUT' : 'POST';
+
+            const response = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                alert('Record saved! Changes are reflected in the Dashboard and History log.');
+                closeModal();
+                // Instead of full reload, refresh the data table on the Management page
+                window.location.reload(); 
+            } else {
+                alert('Error saving record: ' + result.message);
+            }
+        });
+    </script>
+</body>
+</html>
+'''
+
+# ENHANCED Dashboard Template
+DASHBOARD_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Crime Data Dashboard (Dynamic)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <style>
+        :root {
+            --primary-color: #667eea;
+            --secondary-color: #764ba2;
+            --background-color: #f5f7fa;
+            --card-background: white;
+            --text-color: #333;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--background-color); color: var(--text-color); }
+        .navbar { background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%); color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 1000; box-shadow: var(--shadow); }
+        .navbar h1 { font-size: 24px; }
+        .navbar-right { display: flex; gap: 1rem; align-items: center; }
+        .navbar button { background: rgba(255, 255, 255, 0.2); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; transition: background 0.3s; }
+        .navbar button:hover { background: rgba(255, 255, 255, 0.3); }
+        .container { max-width: 1600px; margin: 0 auto; padding: 2rem; }
+        
+        /* Header Image Banner */
+        .header-banner {
+            height: 200px; /* Reduced height for clean design */
+            background: url(dashboard_header.png) center center / cover no-repeat;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            box-shadow: var(--shadow);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 36px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+            animation: fadeIn 1s ease-out;
+        }
+
+        /* Stats Grid */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .stat-card {
+            background: var(--card-background); padding: 1.5rem; border-radius: 12px; box-shadow: var(--shadow);
+            transition: transform 0.3s, box-shadow 0.3s; border-left: 5px solid var(--primary-color);
+        }
+        .stat-card:hover { transform: translateY(-5px); box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1); }
+        .stat-card h3 { font-size: 14px; color: #666; margin-bottom: 0.5rem; text-transform: uppercase; }
+        .stat-card .value { font-size: 32px; font-weight: bold; color: var(--secondary-color); animation: pulse 0.5s ease-out; }
+        
+        /* Charts Grid */
+        .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 2rem; margin-bottom: 2rem; }
+        .chart-container { background: var(--card-background); padding: 2rem; border-radius: 12px; box-shadow: var(--shadow); }
+        .chart-wrapper { position: relative; height: 350px; }
+        
+        /* Table Section */
+        .section { background: var(--card-background); padding: 2rem; border-radius: 12px; box-shadow: var(--shadow); margin-bottom: 2rem; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+        .action-buttons button { margin-left: 0.5rem; }
+        
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes pulse { 0% { opacity: 0.5; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1); } }
+        
+        /* Utility */
+        .btn-live-data { background: linear-gradient(135deg,#00bfa5 0%,#00897b 100%); }
+        .btn-crud { background: linear-gradient(135deg, #f7941d 0%, #ff5722 100%); }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid var(--primary-color); border-radius: 50%; width: 30px; height: 30px; animation: spin 2s linear infinite; margin-right: 10px; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <h1>📊 Crime Data Dashboard (Live)</h1>
+        <div class="navbar-right">
+            <span>Welcome, {{ username }}</span>
+            <button onclick="window.location.href='{{ url_for('data_management') }}'" class="btn-crud">📝 Manage Data (CRUD)</button>
+            {% if powerbi_url %}
+            <button onclick="window.location.href='{{ url_for('powerbi_dashboard') }}'">📈 Power BI</button>
+            {% endif %}
+            <button onclick="window.location.href='{{ url_for('history') }}'">📜 History</button>
+            <button onclick="window.location.href='{{ url_for('logout') }}'">Logout</button>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="header-banner">Crime Against Women: Data Insights</div>
+        
+        <div class="stats-grid">
+            <div class="stat-card"><h3>Total Records</h3><div class="value">{{ stats.total_records }}</div></div>
+            <div class="stat-card"><h3>Total Crimes Reported</h3><div class="value">{{ "{:,}".format(stats.total_crimes) }}</div></div>
+            <div class="stat-card"><h3>States/UTs Covered</h3><div class="value">{{ stats.states_count }}</div></div>
+            <div class="stat-card"><h3>Data Span</h3><div class="value">{{ stats.year_range }}</div></div>
+        </div>
+        
+        <div class="section">
+             <div class="section-header">
+                <h2>Live Data Visuals</h2>
+                <div class="action-buttons">
+                    <div id="loader" class="loader"></div>
+                    <button class="btn btn-live-data" onclick="refreshDashboard()">🔄 Refresh Visuals</button>
+                    <button class="btn btn-success" onclick="downloadPDF()">📄 PDF Report</button>
+                    <button class="btn btn-warning" onclick="downloadExcel()">📊 Excel</button>
+                </div>
+            </div>
+            
+            <div class="charts-grid">
+                <div class="chart-container"><h3 style="margin-bottom:1rem">Yearly Crime Trends</h3><div class="chart-wrapper"><canvas id="lineChart"></canvas></div></div>
+                <div class="chart-container"><h3 style="margin-bottom:1rem">Top 10 States by Total Crimes</h3><div class="chart-wrapper"><canvas id="barChart"></canvas></div></div>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-container"><h3 style="margin-bottom:1rem">Crime Type Distribution</h3><div class="chart-wrapper"><canvas id="doughnutChart"></canvas></div></div>
+                <div class="chart-container"><h3 style="margin-bottom:1rem">Crime Totals (Radar/Dynamic Visual)</h3><div class="chart-wrapper"><canvas id="radarChart"></canvas></div></div>
+            </div>
+            
+            <div class="section-header" style="margin-top: 2rem;">
+                <h3>Recent Data Entries (For Quick Review)</h3>
+                <button class="btn" onclick="window.location.href='{{ url_for('data_management') }}'">View All Records</button>
+            </div>
+            <div style="overflow-x:auto">
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>Year</th><th>State</th><th>Rape</th><th>Kidnap</th><th>Domestic</th><th>Dowry</th><th>Assault(W)</th><th>Traffic</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in records %}
+                        <tr>
+                            <td>{{ r.id }}</td><td>{{ r.year }}</td><td>{{ r.state }}</td><td>{{ r.rape }}</td>
+                            <td>{{ r.kidnap_abduction }}</td><td>{{ r.domestic_violence }}</td><td>{{ r.dowry_deaths }}</td>
+                            <td>{{ r.assault_on_women }}</td><td>{{ r.women_trafficking }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_URL = '/api/chart-data';
+        let charts = {};
+
+        // Color Palette for rich look
+        const primaryColor = 'rgba(102, 126, 234, 1)';
+        const secondaryColor = 'rgba(118, 75, 162, 1)';
+        const colorPalette = [
+            '#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe',
+            '#ff8c00', '#00ced1' 
+        ];
+
+        function refreshDashboard() {
+            document.getElementById('loader').style.display = 'inline-block';
+            fetchAndRenderCharts();
+            setTimeout(() => {
+                document.getElementById('loader').style.display = 'none';
+            }, 1000); // Hide loader after 1 second
+        }
+
+        async function fetchAndRenderCharts() {
+            const response = await fetch(API_URL);
+            const data = await response.json();
+
+            renderLineChart(data.yearly_trends);
+            renderBarChart(data.top_states);
+            renderDoughnutChart(data.crime_totals);
+            renderRadarChart(data.crime_totals);
+        }
+
+        function renderLineChart(yearly_trends) {
+            const ctx = document.getElementById('lineChart').getContext('2d');
+            if (charts.lineChart) charts.lineChart.destroy();
+            
+            charts.lineChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Object.keys(yearly_trends),
+                    datasets: [{
+                        label: 'Total Crimes Reported',
+                        data: Object.values(yearly_trends),
+                        borderColor: primaryColor,
+                        backgroundColor: 'rgba(102, 126, 234, 0.2)',
+                        tension: 0.4,
+                        fill: true,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function renderBarChart(top_states) {
+            const ctx = document.getElementById('barChart').getContext('2d');
+            if (charts.barChart) charts.barChart.destroy();
+            
+            charts.barChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(top_states),
+                    datasets: [{
+                        label: 'Total Crimes',
+                        data: Object.values(top_states),
+                        backgroundColor: colorPalette.map(color => color.replace('1)', '0.8)')), // Use color palette
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y', // Horizontal bars for better state name display
+                    scales: { x: { beginAtZero: true } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function renderDoughnutChart(crime_totals) {
+            const ctx = document.getElementById('doughnutChart').getContext('2d');
+            if (charts.doughnutChart) charts.doughnutChart.destroy();
+            
+            charts.doughnutChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(crime_totals),
+                    datasets: [{
+                        data: Object.values(crime_totals),
+                        backgroundColor: colorPalette.slice(0, Object.keys(crime_totals).length),
+                        hoverOffset: 10
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        tooltip: { callbacks: { label: (context) => {
+                            let sum = context.dataset.data.reduce((a, b) => a + b, 0);
+                            let value = context.parsed;
+                            let percentage = ((value / sum) * 100).toFixed(1) + '%';
+                            return `${context.label}: ${value.toLocaleString()} (${percentage})`;
+                        }}}
+                    }
+                }
+            });
+        }
+
+        function renderRadarChart(crime_totals) {
+            const ctx = document.getElementById('radarChart').getContext('2d');
+            if (charts.radarChart) charts.radarChart.destroy();
+
+            charts.radarChart = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: Object.keys(crime_totals),
+                    datasets: [{
+                        label: 'Crime Magnitude',
+                        data: Object.values(crime_totals),
+                        backgroundColor: 'rgba(102, 126, 234, 0.2)',
+                        borderColor: primaryColor,
+                        pointBackgroundColor: secondaryColor,
+                        pointBorderColor: '#fff',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: primaryColor
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            angleLines: { display: false },
+                            suggestedMin: 0,
+                            ticks: { display: false },
+                            grid: { color: 'rgba(200, 200, 200, 0.2)' }
+                        }
+                    },
+                    plugins: { legend: { position: 'top' } }
+                }
+            });
+        }
+
+        function downloadPDF() { window.location.href='/download/pdf'; }
+        function downloadExcel() { window.location.href='/download/excel'; }
+        
+        // Initial load and auto-refresh feature
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchAndRenderCharts();
+            // Set up auto-refresh for "real-time" feel (every 30 seconds)
+            // Note: True real-time would require WebSockets
+            setInterval(refreshDashboard, 30000); 
+        });
+    </script>
+</body>
+</html>
+'''
+
+if __name__ == '__main__':
+    init_db()
+    app.run(debug=True)

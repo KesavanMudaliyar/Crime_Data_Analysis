@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+{% block title %}Data Management - Crime Analytics Pro{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="glass-card p-4 mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap">
+            <div>
+                <h2><i class="fas fa-database me-2"></i>Advanced Data Management</h2>
+                <p class="text-muted mb-0">Complete CRUD Operations with Real-time Editing</p>
+            </div>
+            <div class="mt-2">
+                <button class="btn btn-realistic me-2" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                    <i class="fas fa-upload me-2"></i>Upload CSV
+                </button>
+                <button class="btn btn-success me-2" data-bs-toggle="modal" data-bs-target="#addRecordModal">
+                    <i class="fas fa-plus me-2"></i>Add Record
+                </button>
+                <a href="{{ url_for('download_data') }}" class="btn btn-info">
+                    <i class="fas fa-download me-2"></i>Export CSV
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="glass-card p-4">
+        {% if records %}
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>ID</th>
+                        <th>Year</th>
+                        <th>State</th>
+                        <th>Rape</th>
+                        <th>Kidnap</th>
+                        <th>Domestic Violence</th>
+                        <th>Dowry Deaths</th>
+                        <th>Assault Women</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in records %}
+                    <tr id="record-{{ record.id }}">
+                        <td>{{ record.id }}</td>
+                        <td>{{ record.YEAR }}</td>
+                        <td>{{ record.STATE }}</td>
+                        <td>{{ record.RAPE }}</td>
+                        <td>{{ record.KIDNAP_ABDUCTION }}</td>
+                        <td>{{ record.DOMESTIC_VIOLENCE }}</td>
+                        <td>{{ record.DOWRY_DEATHS }}</td>
+                        <td>{{ record.ASSAULT_WOMEN }}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-warning" onclick="editRecord({{ record.id }})" data-bs-toggle="tooltip" title="Edit Record">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="btn btn-danger" onclick="deleteRecord({{ record.id }})" data-bs-toggle="tooltip" title="Delete Record">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <i class="fas fa-database fa-4x text-muted mb-3"></i>
+            <h4>No Data Available</h4>
+            <p class="text-muted">Upload a CSV file or add records to get started.</p>
+            <div class="mt-3">
+                <button class="btn btn-realistic me-2" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                    <i class="fas fa-upload me-2"></i>Upload CSV
+                </button>
+                <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addRecordModal">
+                    <i class="fas fa-plus me-2"></i>Add Record
+                </button>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-upload me-2"></i>Upload CSV File</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="upload_csv">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Select CSV File</label>
+                        <input type="file" class="form-control" name="csv_file" accept=".csv" required>
+                        <div class="form-text">
+                            CSV must contain columns: YEAR, STATE, RAPE, KIDNAP_ABDUCTION, DOMESTIC_VIOLENCE, DOWRY_DEATHS, ASSAULT_WOMEN
+                        </div>
+                    </div>
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>Note:</strong> Uploading a new CSV will replace all existing data.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-realistic">Upload & Process</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Add Record Modal -->
+<div class="modal fade" id="addRecordModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-plus me-2"></i>Add New Record</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="action" value="add_record">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Year</label>
+                            <input type="number" class="form-control" name="year" min="2000" max="2030" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">State</label>
+                            <input type="text" class="form-control" name="state" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Rape Cases</label>
+                            <input type="number" class="form-control" name="rape" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Kidnap Cases</label>
+                            <input type="number" class="form-control" name="kidnap" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Domestic Violence</label>
+                            <input type="number" class="form-control" name="domestic_violence" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Dowry Deaths</label>
+                            <input type="number" class="form-control" name="dowry_deaths" min="0" step="1" required>
+                        </div>
+                        <div class="col-12 mb-3">
+                            <label class="form-label">Assault on Women</label>
+                            <input type="number" class="form-control" name="assault_women" min="0" step="1" required>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success">Add Record</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Record Modal -->
+<div class="modal fade" id="editRecordModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Edit Record</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="action" value="update_record">
+                <input type="hidden" name="record_id" id="editRecordId">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Year</label>
+                            <input type="number" class="form-control" name="year" id="editYear" min="2000" max="2030" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">State</label>
+                            <input type="text" class="form-control" name="state" id="editState" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Rape Cases</label>
+                            <input type="number" class="form-control" name="rape" id="editRape" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Kidnap Cases</label>
+                            <input type="number" class="form-control" name="kidnap" id="editKidnap" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Domestic Violence</label>
+                            <input type="number" class="form-control" name="domestic_violence" id="editDomesticViolence" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Dowry Deaths</label>
+                            <input type="number" class="form-control" name="dowry_deaths" id="editDowryDeaths" min="0" step="1" required>
+                        </div>
+                        <div class="col-12 mb-3">
+                            <label class="form-label">Assault on Women</label>
+                            <input type="number" class="form-control" name="assault_women" id="editAssaultWomen" min="0" step="1" required>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning">Update Record</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function deleteRecord(recordId) {
+    if (confirm('Are you sure you want to delete this record? This action cannot be undone.')) {
+        fetch('/data/delete/' + recordId, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Add deletion animation
+                const row = document.getElementById('record-' + recordId);
+                row.style.transition = 'all 0.5s ease';
+                row.style.opacity = '0';
+                row.style.transform = 'translateX(100px)';
+                
+                setTimeout(() => {
+                    location.reload();
+                }, 500);
+            }
+        })
+        .catch(error => console.error('Error:', error));
+    }
+}
+
+async function editRecord(recordId) {
+    try {
+        const response = await fetch('/data/edit/' + recordId);
+        const record = await response.json();
+        
+        // Populate edit form
+        document.getElementById('editRecordId').value = record.id;
+        document.getElementById('editYear').value = record.YEAR;
+        document.getElementById('editState').value = record.STATE;
+        document.getElementById('editRape').value = record.RAPE;
+        document.getElementById('editKidnap').value = record.KIDNAP_ABDUCTION;
+        document.getElementById('editDomesticViolence').value = record.DOMESTIC_VIOLENCE;
+        document.getElementById('editDowryDeaths').value = record.DOWRY_DEATHS;
+        document.getElementById('editAssaultWomen').value = record.ASSAULT_WOMEN;
+        
+        // Show edit modal
+        const editModal = new bootstrap.Modal(document.getElementById('editRecordModal'));
+        editModal.show();
+        
+    } catch (error) {
+        console.error('Error fetching record:', error);
+        alert('Error loading record data');
+    }
+}
+
+// Initialize tooltips
+document.addEventListener('DOMContentLoaded', function() {
+    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    const tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+});
+</script>
+{% endblock %}
